@@ -20,7 +20,7 @@ CF_PARAM_RDS_PASSWORD
 
   $query = 'select now()';
   $result = mysql_query($query, $connection) or die('Failed to execute query.');
-  echo sprintf("Time %s", mysql_result($result, 0));
+  echo sprintf("DBのシステム時刻を表示します。→ %s", mysql_result($result, 0));
 ?>
 </body>
 </html>
