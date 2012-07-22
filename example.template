@@ -1,0 +1,234 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AWS CloudFormation Example Template Copyright 2012 Serverworks Co, Ltd. All Rights Reserved",
+
+  "Parameters" : {
+    "InstanceType" : {
+      "Type"                  : "String",
+      "Description"           : "Instance Type: t1.micro, m1.small, c1.medium, m1.medium, m1.large, m1.xlarge, m2.xlarge, m2.2xlarge, m2.4xlarge, c1.xlarge.",
+      "Default"               : "t1.micro",
+      "AllowedValues"         : [ "t1.micro","m1.small","c1.medium","m1.medium","m1.large","m1.xlarge","m2.xlarge","m2.2xlarge","m2.4xlarge","c1.xlarge" ],
+      "ConstraintDescription" : "must be a valid Amazon EC2 instance type."
+    },
+    "KeyPair" : {
+      "Type"                  : "String",
+      "Description"           : "input the target key pear.",
+      "Default"               : "foo_key_pair",
+      "ConstraintDescription" : "must be a valid Amazon EC2 key pear."
+    },
+    "FrontFQDN" : {
+      "Type" : "String",
+      "Description" : "input the front service fqdn.",
+      "Default"     : "wwww.example.com",
+      "ConstraintDescription" : "must be a valid front fqdn."
+    },
+    "DBPassword" : {
+      "Type" : "String",
+      "Description" : "input the user Database Password.",
+      "Default"     : "passwordpassword",
+      "ConstraintDescription" : "must be a valid Database Password."
+    }
+  },
+  "Resources": {
+    "LoadBalancer": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+        "AvailabilityZones": [
+          "ap-northeast-1a",
+          "ap-northeast-1b"
+        ],
+        "HealthCheck": {
+          "HealthyThreshold": "10",
+          "Interval": "30",
+          "Target": "HTTP:80/foo.php",
+          "Timeout": "5",
+          "UnhealthyThreshold": "2"
+        },
+        "Listeners": [
+          {
+            "InstancePort": "80",
+            "LoadBalancerPort": "80",
+            "Protocol": "HTTP",
+            "PolicyNames": [
+            ]
+          }
+        ]
+      }
+    },
+    "S3Log": {
+      "Type": "AWS::S3::Bucket"
+    },
+    "CloudFront": {
+      "Type" : "AWS::CloudFront::Distribution",
+      "Properties" : {
+        "DistributionConfig" : {
+          "Aliases" : [ { "Ref": "FrontFQDN" } ],
+          "DefaultRootObject" : "index.html",
+          "Origins" : [ {
+            "Id" : "Dynamic Origin",
+            "DomainName" : { "Fn::GetAtt" : [ "LoadBalancer", "DNSName" ] },
+            "CustomOriginConfig" : { "OriginProtocolPolicy" : "http-only" }
+          } ],
+          "DefaultCacheBehavior" : {
+            "TargetOriginId" : "Dynamic Origin",
+            "ForwardedValues" : { "QueryString" : "true" },
+            "ViewerProtocolPolicy" : "allow-all"
+          },
+          "Logging" : {
+            "Bucket" : { "Fn::Join" : ["", [{ "Ref": "S3Log" }, ".s3.amazonaws.com"]] },
+            "Prefix" : ""
+          },
+          "Enabled" : "true"
+        }
+      }
+    },
+    "AutoScalingGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "AvailabilityZones": [
+          "ap-northeast-1a",
+          "ap-northeast-1b"
+        ],
+        "Cooldown": "300",
+        "DesiredCapacity": "2",
+        "MaxSize": "10",
+        "MinSize": "2",
+        "LaunchConfigurationName": { "Ref": "LaunchConfiguration" },
+        "LoadBalancerNames": [ { "Ref": "LoadBalancer" } ]
+      }
+    },
+    "LaunchConfiguration": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "KeyName": { "Ref": "KeyPair" }
+        "ImageId": "ami-2819aa29",
+        "InstanceType": { "Ref": "InstanceType" },
+        "SecurityGroups": [ { "Ref": "FrontSecurity" } ],
+        "UserData" : { "Fn::Base64" : { "Fn::Join" : [ "", [
+          "#!/bin/bash\n",
+          "yum install -y git httpd php php-mysql\n",
+          "/sbin/chkconfig httpd on\n",
+          "/etc/init.d/httpd start\n",
+          "git clone git://github.com/kachina/cloudformation_blog.git /tmp/cloudformation_blog\n",
+          "cp /tmp/cloudformation_blog/* /var/www/html/\n",
+
+          "sed -i \"s/^CF_PARAM_RDS_END_POINT*/  $end_point = '", { "Fn::GetAtt" : [ "RDS", "Endpoint.Address" ] }, "';/g\" /var/www/html/foo.php\n",
+          "sed -i \"s/^CF_PARAM_RDS_PASSWORD*/  $password = '", { "Ref" : "DBPassword" }, "'/g\" /var/www/html/foo.php\n"
+        ] ] } }
+      }
+    },
+    "CPUAlarmHigh": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-up if CPU > 80% for 5 minutes",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "300",
+        "EvaluationPeriods": "2",
+        "Threshold": "90",
+        "AlarmActions": [ { "Ref": "WebServerScaleUpPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "AutoScalingGroup" }
+          }
+        ],
+        "ComparisonOperator": "GreaterThanThreshold"
+      }
+    },
+    "WebServerScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "AutoScalingGroup" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "1"
+      }
+    },
+    "CPUAlarmLow": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-down if CPU < 60% for 5 minutes",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "300",
+        "EvaluationPeriods": "2",
+        "Threshold": "70",
+        "AlarmActions": [ { "Ref": "WebServerScaleDownPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "AutoScalingGroup" }
+          }
+        ],
+        "ComparisonOperator": "LessThanThreshold"
+      }
+    },
+    "WebServerScaleDownPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "AutoScalingGroup" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "-1"
+      }
+    },
+    "RDS": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "AllocatedStorage": "5",
+        "BackupRetentionPeriod": "0",
+        "DBInstanceClass": "db.m1.small",
+        "DBName": "cf_db",
+        "Engine": "mysql",
+        "EngineVersion": "5.5.20",
+        "MasterUsername": "root",
+        "MasterUserPassword": { "Ref": "DBPassword" },
+        "Port": "3306",
+        "PreferredBackupWindow": "19:30-20:00",
+        "PreferredMaintenanceWindow": "sat:00:00-sat:00:30",
+        "DBSecurityGroups": [ { "Ref": "DBSecurity" } ],
+        "MultiAZ" : "true",
+        "BackupRetentionPeriod" : "5",
+        "PreferredBackupWindow": "05:00-06:00"
+      }
+    },
+    "FrontSecurity": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "FrontSecurity",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "80",
+            "ToPort": "80",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "DBSecurity": {
+      "Type": "AWS::RDS::DBSecurityGroup",
+      "Properties": {
+        "GroupDescription": "emt",
+        "DBSecurityGroupIngress": [
+          { "EC2SecurityGroupName": { "Ref": "FrontSecurity"} }
+        ]
+      }
+    }
+  },
+  "Outputs" : {
+    "FrontDNS" : {
+      "Value" : { "Fn::Join" : [ "", [ { "Fn::GetAtt" : [ "CloudFront", "DomainName" ] }, " IN CNAME ", { "Ref": "FrontFQDN" } ] ] },
+      "Description" : "Please set this value in the DNS parameters."
+    }
+  }
+}
